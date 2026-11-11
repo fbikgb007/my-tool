@@ -3,70 +3,168 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>環境測試</title>
+<title>近期最高股價</title>
 <style>
-  body{font-family:-apple-system,BlinkMacSystemFont,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;
-    padding:16px;line-height:1.8;font-size:15px}
-  li{margin-bottom:10px}
-  b{color:#b54708}
-  b.ok{color:#12a150}
-  pre{white-space:pre-wrap;word-break:break-all;font-size:12px;background:#f2f2f2;color:#222;padding:8px;border-radius:8px}
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --text:#1d2330; --sub:#667085; --line:#e3e6ec;
+    --accent:#2563eb; --warn:#b54708; --warnbg:#fffaeb;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#12141a; --card:#1b1e27; --text:#e8eaf0; --sub:#9aa3b5; --line:#2c3140;
+      --accent:#5b8cff; --warn:#fdb022; --warnbg:#2a2113;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;
+    font-size:15px;line-height:1.5}
+  .wrap{max-width:560px;margin:0 auto;padding:14px}
+  h1{font-size:20px;margin:6px 0 12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+  .row{display:flex;flex-wrap:wrap;gap:8px}
+  select{flex:1;min-width:130px;font:inherit;color:var(--text);background:var(--card);
+    border:1px solid var(--line);border-radius:8px;padding:9px 10px}
+  #status{margin-top:10px;padding:8px 10px;border-radius:8px;font-size:14px;border:1px solid var(--line);background:var(--bg)}
+  #status.err{background:var(--warnbg);color:var(--warn);border-color:var(--warn)}
+  .muted{color:var(--sub);font-size:13px}
+  .big{font-size:38px;font-weight:700;margin:2px 0}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+  .stat{border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  .stat .k{font-size:12px;color:var(--sub)}
+  .stat .v{font-size:17px;font-weight:600}
+  .hidden{display:none}
 </style>
 </head>
 <body>
-<h3>環境測試</h3>
-<ul>
-  <li>① 內嵌 script 是否執行：<b id="t1">未執行（script 被擋或被過濾）</b></li>
-  <li>② onclick 是否有效：
-    <button onclick="document.getElementById('t2').textContent='有效';document.getElementById('t2').className='ok'">點我</button>
-    <b id="t2">尚未點擊</b></li>
-  <li>③ 能否連外部網站：<b id="t3">未執行</b></li>
-  <li>④ 安全政策（CSP）阻擋記錄：<b id="t4">無</b></li>
-</ul>
-<pre id="log"></pre>
+<div class="wrap">
+  <h1>近期最高股價</h1>
+
+  <div class="card">
+    <div class="row">
+      <select id="stock"></select>
+      <select id="range">
+        <option value="1">近 1 個月</option>
+        <option value="3" selected>近 3 個月</option>
+        <option value="6">近 6 個月</option>
+        <option value="12">近 1 年</option>
+        <option value="24">近 2 年</option>
+        <option value="0">全部資料</option>
+      </select>
+    </div>
+    <div id="status">載入資料中…</div>
+  </div>
+
+  <div class="card hidden" id="result">
+    <div class="muted" id="name">—</div>
+    <div class="muted" id="label">期間最高價</div>
+    <div class="big" id="high">—</div>
+    <div class="muted" id="highDate">—</div>
+    <div class="grid">
+      <div class="stat"><div class="k">最新收盤價</div><div class="v" id="last">—</div></div>
+      <div class="stat"><div class="k">距最高點</div><div class="v" id="gap">—</div></div>
+      <div class="stat"><div class="k">最高收盤價</div><div class="v" id="highClose">—</div></div>
+      <div class="stat"><div class="k">資料日期</div><div class="v" id="lastDate">—</div></div>
+    </div>
+    <div class="muted" id="info" style="margin-top:10px"></div>
+  </div>
+</div>
 
 <script>
 (function(){
+  "use strict";
+
+  var DATA = null;
+
   function $(id){ return document.getElementById(id); }
-  function log(s){ $("log").textContent += s + "\n"; }
+  function setStatus(type, msg){
+    var el = $("status");
+    el.className = type || "";
+    el.textContent = msg || "";
+    el.style.display = msg ? "block" : "none";
+  }
+  function fmt(n){
+    return Number(n).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  }
 
-  $("t1").textContent = "有執行";
-  $("t1").className = "ok";
+  function render(){
+    var key = $("stock").value;
+    var months = parseInt($("range").value, 10);
+    var s = DATA.stocks[key];
+    if (!s || !s.rows || !s.rows.length){
+      $("result").classList.add("hidden");
+      setStatus("err", "這檔股票目前沒有資料");
+      return;
+    }
+    var all = s.rows;
+    var lastRow = all[all.length - 1];
+    var rows = all;
+    var rangeText = "全部資料";
 
-  document.addEventListener("securitypolicyviolation", function(e){
-    $("t4").textContent = "有被擋";
-    log("[CSP] 被擋：" + e.violatedDirective + " → " + e.blockedURI);
-  });
+    if (months > 0){
+      var d = new Date(lastRow[0] + "T00:00:00Z");
+      d.setUTCMonth(d.getUTCMonth() - months);
+      var cutoff = d.toISOString().slice(0, 10);
+      rows = all.filter(function(r){ return r[0] >= cutoff; });
+      var sel = $("range");
+      rangeText = sel.options[sel.selectedIndex].text;
+    }
+    if (!rows.length) rows = [lastRow];
 
-  window.addEventListener("error", function(e){ log("[錯誤] " + e.message); });
-
-  $("t3").textContent = "測試中…";
-  var tests = [
-    {name: "Yahoo 直連", url: "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d"},
-    {name: "代理 corsproxy", url: "https://corsproxy.io/?url=" + encodeURIComponent("https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d")},
-    {name: "代理 allorigins", url: "https://api.allorigins.win/raw?url=" + encodeURIComponent("https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d")}
-  ];
-  var okCount = 0, done = 0;
-  tests.forEach(function(t){
-    var ctrl = new AbortController();
-    var timer = setTimeout(function(){ ctrl.abort(); }, 10000);
-    fetch(t.url, {signal: ctrl.signal}).then(function(r){
-      clearTimeout(timer);
-      return r.text().then(function(txt){
-        if (r.ok && txt.indexOf("chart") >= 0){ okCount++; log("✔ " + t.name + "：成功"); }
-        else log("✘ " + t.name + "：HTTP " + r.status + " " + txt.slice(0, 50).replace(/\s+/g, " "));
-      });
-    }).catch(function(e){
-      clearTimeout(timer);
-      log("✘ " + t.name + "：" + (e.name === "AbortError" ? "逾時" : e.message));
-    }).then(function(){
-      done++;
-      if (done === tests.length){
-        $("t3").textContent = okCount > 0 ? ("至少 " + okCount + " 種方式可用") : "全部失敗";
-        $("t3").className = okCount > 0 ? "ok" : "";
-      }
+    var hi = rows[0], hiClose = rows[0];
+    rows.forEach(function(r){
+      if (r[2] > hi[2]) hi = r;
+      if (r[4] > hiClose[4]) hiClose = r;
     });
-  });
+    var gap = lastRow[4] / hi[2] - 1;
+
+    $("name").textContent = s.name + "（" + s.symbol + "）";
+    $("label").textContent = rangeText + "　最高價";
+    $("high").textContent = fmt(hi[2]);
+    $("highDate").textContent = "發生日期：" + hi[0];
+    $("last").textContent = fmt(lastRow[4]);
+    $("gap").textContent = (gap * 100).toFixed(2) + "%";
+    $("highClose").textContent = fmt(hiClose[4]) + "（" + hiClose[0] + "）";
+    $("lastDate").textContent = lastRow[0];
+
+    var upd = "";
+    try {
+      upd = new Date(DATA.updated).toLocaleString("zh-TW", {timeZone: "Asia/Taipei", hour12: false});
+    } catch (e){ upd = DATA.updated; }
+    $("info").textContent = "幣別 " + (s.currency || "—") + "　區間 " + rows.length + " 個交易日　資料更新於 " + upd + "（台灣時間）";
+
+    $("result").classList.remove("hidden");
+    setStatus("", "");
+  }
+
+  function init(){
+    if (location.protocol === "file:"){
+      setStatus("err", "請透過 GitHub Pages 網址開啟，直接開本機檔案無法讀取 data.json。");
+      return;
+    }
+    fetch("data.json?t=" + Date.now(), {cache: "no-store"}).then(function(r){
+      if (!r.ok) throw new Error("找不到 data.json（HTTP " + r.status + "），請先到 Actions 手動執行一次排程");
+      return r.json();
+    }).then(function(j){
+      if (!j || !j.stocks || !Object.keys(j.stocks).length) throw new Error("data.json 裡沒有股票資料");
+      DATA = j;
+      var sel = $("stock");
+      sel.innerHTML = "";
+      Object.keys(j.stocks).forEach(function(k){
+        var o = document.createElement("option");
+        o.value = k;
+        o.textContent = k + "　" + (j.stocks[k].name || "");
+        sel.appendChild(o);
+      });
+      render();
+    }).catch(function(e){
+      setStatus("err", "載入失敗：" + e.message);
+    });
+  }
+
+  $("stock").addEventListener("change", function(){ if (DATA) render(); });
+  $("range").addEventListener("change", function(){ if (DATA) render(); });
+  init();
 })();
 </script>
 </body>
