@@ -23,6 +23,7 @@
   h1{font-size:20px;margin:6px 0 12px}
   h2{font-size:16px;margin:0 0 10px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+  .card.next{border:2px solid var(--accent)}
   .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
   select,input,button{font:inherit;color:var(--text);background:var(--card);
     border:1px solid var(--line);border-radius:8px;padding:9px 10px}
@@ -89,6 +90,12 @@
       <div class="stat"><div class="k">資料日期</div><div class="v" id="lastDate">—</div></div>
     </div>
     <div class="muted" id="info" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card next hidden" id="cardNext">
+    <div class="muted">下次加碼觸發價（收盤價）</div>
+    <div class="big" id="nextPrice">—</div>
+    <div id="nextText" class="muted"></div>
   </div>
 
   <div class="card hidden" id="cardLevels">
@@ -186,6 +193,27 @@
     return {events: events, endZone: prev};
   }
 
+  // ===== 下次加碼觸發價 =====
+  function renderNext(){
+    var H = CTX.H, cur = CTX.cur, zc = CTX.zc;
+    if (zc < 5){
+      var nz = zc + 1;
+      var price = H * (1 - nz / 10);
+      var need = price / cur - 1;
+      $("nextPrice").textContent = "≤ " + fmt(price);
+      $("nextText").textContent =
+        "收盤價跌到這個價位以下，會跌入" + zoneText(nz) + "，觸發第 " + nz + " 次加碼。距目前價 " +
+        fmt(cur) + " 還需下跌 " + (Math.abs(need) * 100).toFixed(2) + "%。";
+    } else {
+      var edge = H * 0.5;
+      $("nextPrice").textContent = "> " + fmt(edge) + " 後再 ≤ " + fmt(edge);
+      $("nextText").textContent =
+        "目前已在最深區間（跌 50% 以上），無法再往下跌入新區間。要再觸發第 5 次，需先漲回 " +
+        fmt(edge) + " 以上（回到第 4 次區間），再跌回 " + fmt(edge) + " 以下。";
+    }
+    $("cardNext").classList.remove("hidden");
+  }
+
   // ===== 主畫面 =====
   function render(){
     var key = $("stock").value;
@@ -195,6 +223,7 @@
 
     if (!s || !s.rows || !s.rows.length){
       $("cardMain").classList.add("hidden");
+      $("cardNext").classList.add("hidden");
       $("cardLevels").classList.add("hidden");
       $("cardAdd").classList.add("hidden");
       setStatus("err", "這檔股票目前沒有資料");
@@ -248,6 +277,7 @@
     $("cardMain").classList.remove("hidden");
     $("cardLevels").classList.remove("hidden");
     $("cardAdd").classList.remove("hidden");
+    renderNext();
     setStatus("", "");
 
     var rec = store.adds[key] || {};
