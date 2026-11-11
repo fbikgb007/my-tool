@@ -7,12 +7,12 @@
 <style>
   :root{
     --bg:#f5f6f8; --card:#ffffff; --text:#1d2330; --sub:#667085; --line:#e3e6ec;
-    --accent:#2563eb; --warn:#b54708; --warnbg:#fffaeb;
+    --accent:#2563eb; --warn:#b54708; --warnbg:#fffaeb; --ok:#12a150;
   }
   @media (prefers-color-scheme: dark){
     :root{
       --bg:#12141a; --card:#1b1e27; --text:#e8eaf0; --sub:#9aa3b5; --line:#2c3140;
-      --accent:#5b8cff; --warn:#fdb022; --warnbg:#2a2113;
+      --accent:#5b8cff; --warn:#fdb022; --warnbg:#2a2113; --ok:#3ddc84;
     }
   }
   *{box-sizing:border-box}
@@ -23,15 +23,18 @@
   h1{font-size:20px;margin:6px 0 12px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
   .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-  input,select,button{font:inherit;color:var(--text);background:var(--card);
+  input,select,button,textarea{font:inherit;color:var(--text);background:var(--card);
     border:1px solid var(--line);border-radius:8px;padding:9px 10px}
-  input{flex:1;min-width:120px}
+  input[type=text]{flex:1;min-width:120px}
+  textarea{width:100%;height:110px;font-size:13px;font-family:monospace}
   button{cursor:pointer}
   button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
   button:disabled{opacity:.5;cursor:default}
-  #status{margin-top:10px;padding:8px 10px;border-radius:8px;font-size:14px;display:none}
-  #status.info{display:block;background:var(--bg);border:1px solid var(--line)}
-  #status.err{display:block;background:var(--warnbg);color:var(--warn);border:1px solid var(--warn)}
+  #status{margin-top:10px;padding:8px 10px;border-radius:8px;font-size:14px;border:1px solid var(--line);background:var(--bg)}
+  #status.err{background:var(--warnbg);color:var(--warn);border-color:var(--warn)}
+  #status.ok{color:var(--ok);border-color:var(--ok)}
+  #log{margin:10px 0 0;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);
+    font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto;color:var(--sub)}
   .muted{color:var(--sub);font-size:13px}
   .big{font-size:38px;font-weight:700;margin:2px 0}
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
@@ -39,6 +42,7 @@
   .stat .k{font-size:12px;color:var(--sub)}
   .stat .v{font-size:17px;font-weight:600}
   .hidden{display:none}
+  summary{cursor:pointer;font-weight:600}
 </style>
 </head>
 <body>
@@ -56,9 +60,10 @@
         <option value="2y">近 2 年</option>
         <option value="5y">近 5 年</option>
       </select>
-      <button class="primary" id="btn">抓取</button>
+      <button class="primary" id="btn" type="button">抓取</button>
     </div>
-    <div id="status"></div>
+    <div id="status">網頁載入中…（若這行一直沒變，代表程式沒有執行）</div>
+    <pre id="log" class="hidden"></pre>
   </div>
 
   <div class="card hidden" id="result">
@@ -74,6 +79,15 @@
     </div>
     <div class="muted" id="info" style="margin-top:10px"></div>
   </div>
+
+  <div class="card">
+    <details>
+      <summary>自動抓取失敗時：貼上 CSV</summary>
+      <p class="muted">到 Yahoo 奇摩股市或 Yahoo Finance 的「歷史資料」下載 CSV，用文字開啟後整份貼上。需要有「日期、最高、收盤」欄位（中英文標題皆可）。</p>
+      <textarea id="paste" placeholder="Date,Open,High,Low,Close,Volume&#10;2026-11-10,..."></textarea>
+      <div class="row" style="margin-top:8px"><button type="button" id="btnPaste">用貼上的資料計算</button></div>
+    </details>
+  </div>
 </div>
 
 <script>
@@ -83,38 +97,80 @@
   function $(id){ return document.getElementById(id); }
   function setStatus(type, msg){
     var el = $("status");
-    el.className = msg ? type : "";
+    el.className = type || "";
     el.textContent = msg || "";
+  }
+  function log(msg){
+    var el = $("log");
+    el.classList.remove("hidden");
+    el.textContent += msg + "\n";
+    el.scrollTop = el.scrollHeight;
   }
   function fmt(n){
     return Number(n).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
   }
 
-  function fetchWithTimeout(url, ms){
+  // 任何程式錯誤都直接顯示在畫面上
+  window.addEventListener("error", function(e){
+    setStatus("err", "程式錯誤：" + (e.message || "未知"));
+    log("[程式錯誤] " + (e.message || "") + (e.lineno ? "（第 " + e.lineno + " 行）" : ""));
+  });
+  window.addEventListener("unhandledrejection", function(e){
+    setStatus("err", "未處理的錯誤：" + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+
+  // ===== 網路 =====
+  function fetchText(url, ms){
     var ctrl = new AbortController();
-    var t = setTimeout(function(){ ctrl.abort(); }, ms || 12000);
+    var timer = setTimeout(function(){ ctrl.abort(); }, ms || 10000);
     return fetch(url, {signal: ctrl.signal}).then(function(r){
-      clearTimeout(t);
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return r.json();
-    }).catch(function(e){ clearTimeout(t); throw e; });
+      clearTimeout(timer);
+      return r.text().then(function(t){
+        if (!r.ok) throw new Error("HTTP " + r.status + "：" + t.slice(0, 60).replace(/\s+/g, " "));
+        return t;
+      });
+    }).catch(function(e){
+      clearTimeout(timer);
+      if (e.name === "AbortError") throw new Error("逾時（10 秒無回應）");
+      throw e;
+    });
+  }
+
+  function buildChain(target){
+    var alt = target.replace("query1.", "query2.");
+    return [
+      {name: "直連 query1", url: target},
+      {name: "直連 query2", url: alt},
+      {name: "代理 corsproxy", url: "https://corsproxy.io/?url=" + encodeURIComponent(target)},
+      {name: "代理 allorigins", url: "https://api.allorigins.win/raw?url=" + encodeURIComponent(target)},
+      {name: "代理 codetabs", url: "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(target)}
+    ];
   }
 
   var source = "";
-  function fetchViaChain(url){
-    var chain = [
-      {name: "直連", build: function(u){ return u; }},
-      {name: "代理 A", build: function(u){ return "https://corsproxy.io/?url=" + encodeURIComponent(u); }},
-      {name: "代理 B", build: function(u){ return "https://api.allorigins.win/raw?url=" + encodeURIComponent(u); }}
-    ];
-    var i = 0;
+  function fetchChart(target){
+    var chain = buildChain(target), i = 0;
     function next(){
-      if (i >= chain.length) return Promise.reject(new Error("所有連線方式都失敗，請稍後再試"));
+      if (i >= chain.length) return Promise.reject(new Error("所有連線方式都失敗（詳見下方記錄）"));
       var c = chain[i++];
-      return fetchWithTimeout(c.build(url)).then(function(j){
+      log("嘗試：" + c.name + " …");
+      return fetchText(c.url).then(function(text){
+        var j;
+        try { j = JSON.parse(text); }
+        catch (e){ throw new Error("回傳不是 JSON：" + text.slice(0, 60).replace(/\s+/g, " ")); }
+        if (j && j.chart && j.chart.error){
+          var code = j.chart.error.code || "";
+          if (code === "Not Found") { var nf = new Error("NOTFOUND"); nf.notFound = true; throw nf; }
+          throw new Error("Yahoo 回報：" + (j.chart.error.description || code));
+        }
         source = c.name;
+        log("  → 成功");
         return j;
-      }).catch(function(){ return next(); });
+      }).catch(function(e){
+        if (e.notFound) throw e;
+        log("  → 失敗：" + e.message);
+        return next();
+      });
     }
     return next();
   }
@@ -125,10 +181,85 @@
     return [s];
   }
 
-  function parse(json){
+  function parseYahoo(json){
     var r = json && json.chart && json.chart.result && json.chart.result[0];
-    if (!r || !r.timestamp) throw new Error("empty");
+    if (!r || !r.timestamp) throw new Error("NOTFOUND");
     var q = r.indicators.quote[0];
     var off = (r.meta && r.meta.gmtoffset) || 0;
     var rows = [];
-    for
+    for (var i = 0; i < r.timestamp.length; i++){
+      if (q.close[i] == null || q.high[i] == null) continue;
+      rows.push({
+        date: new Date((r.timestamp[i] + off) * 1000).toISOString().slice(0, 10),
+        high: q.high[i], close: q.close[i]
+      });
+    }
+    if (!rows.length) throw new Error("NOTFOUND");
+    return {rows: rows, meta: r.meta || {}};
+  }
+
+  function load(input, range){
+    var list = candidates(input), idx = 0;
+    function tryNext(){
+      if (idx >= list.length) return Promise.reject(new Error("找不到此代號的資料，請確認代號"));
+      var sym = list[idx++];
+      log("—— 查詢 " + sym + " ——");
+      var target = "https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(sym) +
+                   "?range=" + range + "&interval=1d";
+      return fetchChart(target).then(function(j){
+        var p = parseYahoo(j);
+        p.symbol = sym;
+        return p;
+      }).catch(function(e){
+        var notFound = e.notFound || e.message === "NOTFOUND";
+        if (notFound && idx < list.length) return tryNext();
+        if (notFound) throw new Error("找不到此代號的資料，請確認代號");
+        throw e;
+      });
+    }
+    return tryNext();
+  }
+
+  // ===== 顯示 =====
+  function show(p, rangeText){
+    var rows = p.rows, hi = rows[0], hiClose = rows[0];
+    rows.forEach(function(r){
+      if (r.high > hi.high) hi = r;
+      if (r.close > hiClose.close) hiClose = r;
+    });
+    var last = rows[rows.length - 1];
+    var gap = last.close / hi.high - 1;
+    var meta = p.meta || {};
+
+    $("name").textContent = (meta.longName || meta.shortName || p.symbol) + "（" + p.symbol + "）";
+    $("label").textContent = rangeText + "　最高價";
+    $("high").textContent = fmt(hi.high);
+    $("highDate").textContent = "發生日期：" + hi.date;
+    $("last").textContent = fmt(last.close);
+    $("gap").textContent = (gap * 100).toFixed(2) + "%";
+    $("highClose").textContent = fmt(hiClose.close) + "（" + hiClose.date + "）";
+    $("lastDate").textContent = last.date;
+    $("info").textContent = "幣別 " + (meta.currency || "—") + "　共 " + rows.length + " 個交易日　來源 " + (p.source || source);
+    $("result").classList.remove("hidden");
+  }
+
+  // ===== 抓取 =====
+  function go(){
+    var sym = $("symbol").value.trim();
+    if (!sym){ setStatus("err", "請先輸入股票代號"); return; }
+    var sel = $("range");
+    var rangeText = sel.options[sel.selectedIndex].text;
+    $("btn").disabled = true;
+    $("log").textContent = "";
+    $("result").classList.add("hidden");
+    setStatus("", "抓取中…");
+    load(sym, sel.value).then(function(p){
+      setStatus("ok", "完成");
+      show(p, rangeText);
+    }).catch(function(e){
+      setStatus("err", "失敗：" + e.message + "　可展開下方「貼上 CSV」改用手動資料。");
+    }).then(function(){ $("btn").disabled = false; });
+  }
+
+  // ===== 貼上 CSV =====
+  function parsePa
