@@ -141,6 +141,15 @@
       <tbody id="rules"></tbody>
     </table>
     <div class="muted" style="margin-top:8px">各區間加碼量合計為 19/19。剛好跌 30% 屬於第3加碼區間，其餘邊界同理。</div>
+    <div class="muted" style="margin-top:10px"><b>加碼後的失效與重新生效：</b>在某加碼區間加碼後，該區間以及比它更淺的區間都會暫時失效；要漲回比加碼區間高兩個區間（以當日最高價判斷，等於該價位就算），該區間才會重新生效。各區間重新生效條件：</div>
+    <ul class="muted">
+      <li>第1加碼區間：回到最高價（0%）或創新高</li>
+      <li>第2加碼區間：漲回最高價的 -10%</li>
+      <li>第3加碼區間：漲回最高價的 -20%</li>
+      <li>第4加碼區間：漲回最高價的 -30%</li>
+      <li>第5加碼區間：漲回最高價的 -40%</li>
+    </ul>
+    <div class="muted" style="margin-top:6px">比加碼區間更深的區間不受影響，股價向下跌入就會觸發。</div>
   </div>
 </div>
 
@@ -189,8 +198,10 @@
 
   // ===== 區間規則（以「分」為單位比對，避免浮點誤差） =====
   function cents(x){ return Math.round(x * 100); }
-  // 第 k 個邊界價位（四捨五入到小數 2 位），k=1..5 對應跌 10%..50%
+  // 第 k 個價位（四捨五入到小數 2 位），k=0 為最高價，k=1..5 對應跌 10%..50%
   function levelPrice(H, k){ return cents(H * (1 - k / 10)) / 100; }
+  // 第 z 加碼區間重新生效所需漲回的價位（當日最高價 >= 此價位）
+  function unlockPrice(H, z){ return levelPrice(H, z - 1); }
 
   // 0：未達 10%；1：跌 10%（含）～20%；2：20%～30%；3：30%～40%；4：40%～50%；5：50% 以上
   function zoneOf(price, H){
@@ -207,16 +218,38 @@
   }
   function zoneShort(z){ return z === 0 ? "未達10%" : "第" + z + "加碼區間"; }
 
-  // 從加碼日之後逐日模擬：由較淺區間跌入較深區間 → 一次觸發
+  function lockedUpTo(n){
+    var o = {};
+    for (var k = 1; k <= n; k++) o[k] = true;
+    return o;
+  }
+
+  // 從加碼日隔天起逐日模擬：
+  //  1) 先用當日最高價檢查失效中的區間是否重新生效（高 >= 生效價位）
+  //  2) 再用當日收盤價判斷是否跌入「有效」的區間 → 觸發加碼（並假設已加碼，該區間與更淺區間失效）
   function simulate(rows, H, d0, z0){
-    var prev = z0, events = [];
+    var locked = lockedUpTo(z0);
+    var prev = z0, log = [], triggers = [];
     for (var i = 0; i < rows.length; i++){
-      if (rows[i][0] <= d0) continue;
-      var z = zoneOf(rows[i][4], H);
-      if (z > prev) events.push({date: rows[i][0], price: rows[i][4], from: prev, to: z});
-      prev = z;
+      var r = rows[i];
+      if (r[0] <= d0) continue;
+      var hiC = cents(r[2]);
+      for (var z = 1; z <= 5; z++){
+        if (locked[z] && hiC >= cents(unlockPrice(H, z))){
+          locked[z] = false;
+          log.push({type: "unlock", date: r[0], zone: z, high: r[2], level: unlockPrice(H, z)});
+        }
+      }
+      var zc = zoneOf(r[4], H);
+      if (zc >= 1 && !locked[zc]){
+        var ev = {type: "trigger", date: r[0], price: r[4], from: prev, to: zc};
+        log.push(ev);
+        triggers.push(ev);
+        for (var k = 1; k <= zc; k++) locked[k] = true;
+      }
+      prev = zc;
     }
-    return {events: events, endZone: prev};
+    return {locked: locked, log: log, triggers: triggers};
   }
 
   // ===== 加碼說明表（固定內容） =====
@@ -229,50 +262,60 @@
     $("rules").innerHTML = h;
   }
 
-  // ===== 下次加碼觸發價（依加碼記錄的狀態） =====
-  // st.mode：
-  //   "none"    尚未輸入完整加碼記錄
-  //   "ok"      記錄有效，目前沒有待執行的加碼
-  //   "pending" 記錄有效，且加碼日後已跌入新區間、尚未加碼
+  // ===== 下次加碼觸發價 =====
+  // st.mode："none"（尚未輸入完整記錄）、"bad"（日期有誤）、"ok"、"pending"（已有待執行的加碼）
+  // st.locked：目前失效中的區間
   function renderNext(st){
     var H = CTX.H, cur = CTX.cur, zc = CTX.zc;
+    var locked = st.locked;
     var note = $("nextNote");
     var lead = "";
 
     if (st.mode === "pending"){
       note.className = "notice";
       note.textContent = "目前已觸發" + zoneShort(zc) + "（加碼量 " + amtText(zc) + "），請先完成這次加碼。下方是完成後的下次觸發價。";
-      lead = "依你的記錄（加碼價 " + fmt(st.p0) + "、" + st.d0 + "，" + zoneShort(st.z0) + "）。";
     } else {
       note.className = "notice hidden";
       note.textContent = "";
-      if (st.mode === "ok"){
-        lead = "依你的記錄（加碼價 " + fmt(st.p0) + "、" + st.d0 + "，" + zoneShort(st.z0) + "）。";
-      } else if (st.mode === "bad"){
-        lead = "加碼記錄的日期有誤，暫以目前所在區間推算。";
-      } else {
-        lead = "尚未輸入完整加碼記錄，暫以目前所在區間（" + zoneShort(zc) + "）推算，並假設該區間已處理完畢。";
-      }
     }
 
-    if (zc < 5){
-      var nz = zc + 1;
+    if (st.mode === "ok" || st.mode === "pending"){
+      lead = "依你的記錄（加碼價 " + fmt(st.p0) + "、" + st.d0 + "，" + zoneShort(st.z0) + "）" +
+        (st.triggerCount ? "，並假設加碼日後的觸發都已加碼" : "") + "。";
+    } else if (st.mode === "bad"){
+      lead = "加碼記錄的日期有誤，暫以目前所在區間推算。";
+    } else {
+      lead = "尚未輸入完整加碼記錄，暫以目前所在區間（" + zoneShort(zc) + "）推算，並假設該區間已處理完畢。";
+    }
+
+    // 目前所在區間之下，最淺的有效區間
+    var nz = 0;
+    for (var z = zc + 1; z <= 5; z++){
+      if (!locked[z]){ nz = z; break; }
+    }
+
+    var lockedTxt = "";
+    if (st.mode === "ok" || st.mode === "pending"){
+      var parts = [];
+      for (var k = 1; k <= 5; k++){
+        if (locked[k]) parts.push(zoneShort(k) + "（需漲回 " + fmt(unlockPrice(H, k)) + " 以上）");
+      }
+      if (parts.length) lockedTxt = " 目前失效中：" + parts.join("、") + "。";
+    }
+
+    if (nz){
       var price = levelPrice(H, nz);
       var need = price / cur - 1;
       $("nextPrice").textContent = "≤ " + fmt(price);
-      var t = lead + " 收盤價跌到這個價位以下（含），會跌入" + zoneText(nz) +
+      $("nextText").textContent = lead + " 收盤價跌到這個價位以下（含），會跌入" + zoneText(nz) +
         "，加碼量為現金部位的 " + amtText(nz) + "。距目前價 " + fmt(cur) + " 還需下跌 " +
-        (Math.abs(need) * 100).toFixed(2) + "%。";
-      if ((st.mode === "ok" || st.mode === "pending") && nz <= st.z0){
-        t += " 你先前已在" + zoneShort(st.z0) + "加碼過；目前股價已漲回較淺區間，所以再次跌入" + zoneShort(nz) + "會構成新的觸發。";
-      }
-      $("nextText").textContent = t;
+        (Math.abs(need) * 100).toFixed(2) + "%。" + lockedTxt;
     } else {
-      var edge = levelPrice(H, 5);
-      $("nextPrice").textContent = "> " + fmt(edge) + " 後再 ≤ " + fmt(edge);
+      var up = unlockPrice(H, 5), dn = levelPrice(H, 5);
+      $("nextPrice").textContent = "先 ≥ " + fmt(up) + "，再 ≤ " + fmt(dn);
       $("nextText").textContent = lead +
-        " 目前已在最深的第5加碼區間，無法再往下跌入新區間。要再觸發第5加碼區間（加碼量 " + amtText(5) +
-        "），需先漲回 " + fmt(edge) + " 以上（回到第4加碼區間），再跌回 " + fmt(edge) + " 以下。";
+        " 目前已沒有更深的有效區間。第5加碼區間（加碼量 " + amtText(5) + "）要先漲回 " + fmt(up) +
+        " 以上（當日最高價）讓它重新生效，之後收盤價再跌到 " + fmt(dn) + " 以下才會觸發。" + lockedTxt;
     }
     $("cardNext").classList.remove("hidden");
   }
@@ -374,54 +417,61 @@
 
     if (!pStr || isNaN(p0) || p0 <= 0){
       info.textContent = "輸入加碼價與加碼日期後，會顯示判斷結果。目前所在區間：" + zoneText(CTX.zc) + "。";
-      renderNext({mode: "none"});
+      renderNext({mode: "none", locked: lockedUpTo(CTX.zc)});
       return;
     }
     var z0 = zoneOf(p0, CTX.H);
     var line = "加碼價 " + fmt(p0) + " 相當於最高價下跌 " + pct(1 - p0 / CTX.H) + "，屬於：" + zoneText(z0) + "。";
     if (!d0){
       info.textContent = line + "　請再輸入加碼日期，才能判斷後續是否再加碼。";
-      renderNext({mode: "none"});
+      renderNext({mode: "none", locked: lockedUpTo(CTX.zc)});
       return;
     }
     if (d0 > CTX.lastDate){
       info.textContent = line;
       showVerdict("no", "日期有誤", "加碼日期晚於最新資料日（" + CTX.lastDate + "），請確認。");
-      renderNext({mode: "bad"});
+      renderNext({mode: "bad", locked: lockedUpTo(CTX.zc)});
       return;
     }
     info.textContent = line;
 
     var sim = simulate(CTX.all, CTX.H, d0, z0);
-    var ev = sim.events;
-    var last = ev.length ? ev[ev.length - 1] : null;
+    var trig = sim.triggers;
+    var last = trig.length ? trig[trig.length - 1] : null;
     var pending = !!(last && CTX.zc >= last.to);
 
     if (!last){
       showVerdict("no", "不加碼",
-        "自 " + d0 + " 之後，股價沒有出現「由較淺區間跌入較深區間」的情形。目前所在：" + zoneText(CTX.zc) + "。");
+        "自 " + d0 + " 之後，股價沒有跌入新的有效加碼區間。目前所在：" + zoneText(CTX.zc) + "。");
     } else if (pending){
       showVerdict("yes", "建議加碼：" + zoneShort(last.to) + "（現金部位的 " + amtText(last.to) + "）",
-        last.date + " 收盤 " + fmt(last.price) + " 由" + zoneShort(last.from) + "跌入" + zoneShort(last.to) +
-        "，之後尚未漲回較淺區間，且你記錄的加碼日之後沒有新的加碼。目前仍在：" + zoneText(CTX.zc) + "。");
+        last.date + " 收盤 " + fmt(last.price) + " 跌入" + zoneShort(last.to) +
+        "（該區間在你上次加碼後是有效的）。目前仍在：" + zoneText(CTX.zc) + "。");
     } else {
       showVerdict("no", "不加碼（等待）",
         "最近一次觸發是 " + last.date + " 跌入" + zoneShort(last.to) + "，但目前已漲回" + zoneShort(CTX.zc) +
-        "。需再度由較淺區間跌入較深區間，才會觸發。");
+        "。需符合下方「下次加碼觸發價」的條件才會再觸發。");
     }
 
-    if (ev.length){
-      var show = ev.slice(-10).reverse();
-      var h = "<div class='muted' style='margin-top:12px'>加碼日後的觸發記錄（以收盤價判斷" +
-        (ev.length > 10 ? "，只列最近 10 筆" : "") + "）：</div><ul>";
+    if (sim.log.length){
+      var show = sim.log.slice(-10).reverse();
+      var h = "<div class='muted' style='margin-top:12px'>加碼日後的記錄（觸發以收盤價判斷，重新生效以當日最高價判斷" +
+        (sim.log.length > 10 ? "，只列最近 10 筆" : "") + "）：</div><ul>";
       show.forEach(function(e){
-        h += "<li>" + e.date + "　" + zoneShort(e.from) + " → " + zoneShort(e.to) + "　收盤 " + fmt(e.price) + "</li>";
+        if (e.type === "trigger"){
+          h += "<li>" + e.date + "　觸發：" + zoneShort(e.from) + " → " + zoneShort(e.to) + "，收盤 " + fmt(e.price) + "</li>";
+        } else {
+          h += "<li>" + e.date + "　" + zoneShort(e.zone) + "重新生效（最高價 " + fmt(e.high) + " ≥ " + fmt(e.level) + "）</li>";
+        }
       });
-      h += "</ul><div class='muted' style='margin-top:6px'>若你已依這些觸發實際加碼，請把加碼價與日期改成最新一次。</div>";
+      h += "</ul>";
+      if (trig.length){
+        h += "<div class='muted' style='margin-top:6px'>若你已依觸發實際加碼，請把加碼價與日期改成最新一次；下次加碼觸發價已假設這些觸發都已加碼。</div>";
+      }
       evBox.innerHTML = h;
     }
 
-    renderNext({mode: pending ? "pending" : "ok", p0: p0, d0: d0, z0: z0});
+    renderNext({mode: pending ? "pending" : "ok", locked: sim.locked, p0: p0, d0: d0, z0: z0, triggerCount: trig.length});
   }
 
   // ===== 初始化 =====
