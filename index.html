@@ -129,6 +129,7 @@
       <thead><tr><th>跌幅</th><th>價位</th><th>距目前價</th><th>加碼量</th></tr></thead>
       <tbody id="levels"></tbody>
     </table>
+    <div class="muted" style="margin-top:8px">價位以四捨五入到小數 2 位為準；股價等於或低於該價位，即進入該加碼區間。</div>
   </div>
 
   <div class="card">
@@ -137,7 +138,7 @@
       <thead><tr><th>加碼區間</th><th>跌幅範圍</th><th>加碼量（現金部位）</th></tr></thead>
       <tbody id="rules"></tbody>
     </table>
-    <div class="muted" style="margin-top:8px">各區間加碼量合計為 19/19。</div>
+    <div class="muted" style="margin-top:8px">各區間加碼量合計為 19/19。剛好跌 30% 屬於第3加碼區間，其餘邊界同理。</div>
   </div>
 </div>
 
@@ -184,18 +185,23 @@
     try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch (e){}
   }
 
-  // ===== 區間規則 =====
-  // 0：未達 10%；1：10~20%；2：20~30%；3：30~40%；4：40~50%；5：50% 以上
+  // ===== 區間規則（以「分」為單位比對，避免浮點誤差） =====
+  function cents(x){ return Math.round(x * 100); }
+  // 第 k 個邊界價位（四捨五入到小數 2 位），k=1..5 對應跌 10%..50%
+  function levelPrice(H, k){ return cents(H * (1 - k / 10)) / 100; }
+
+  // 0：未達 10%；1：跌 10%（含）～20%；2：20%～30%；3：30%～40%；4：40%～50%；5：50% 以上
   function zoneOf(price, H){
-    var drop = 1 - price / H;
-    if (drop < 0.1 - 1e-9) return 0;
-    var z = Math.floor(drop * 10 + 1e-9);
-    return Math.min(5, Math.max(1, z));
+    var pc = cents(price);
+    for (var k = 5; k >= 1; k--){
+      if (pc <= cents(levelPrice(H, k))) return k;
+    }
+    return 0;
   }
   function zoneText(z){
     if (z === 0) return "未達 10%（不加碼）";
     if (z === 5) return "第5加碼區間（跌 50% 以上）";
-    return "第" + z + "加碼區間（跌 " + (z * 10) + "%～" + ((z + 1) * 10) + "%）";
+    return "第" + z + "加碼區間（跌 " + (z * 10) + "%～未達 " + ((z + 1) * 10) + "%）";
   }
   function zoneShort(z){ return z === 0 ? "未達10%" : "第" + z + "加碼區間"; }
 
@@ -215,7 +221,7 @@
   function renderRules(){
     var h = "";
     for (var z = 1; z <= 5; z++){
-      var range = z === 5 ? "跌 50% 以上" : "跌 " + (z * 10) + "%～" + ((z + 1) * 10) + "%";
+      var range = z === 5 ? "跌 50% 以上" : "跌 " + (z * 10) + "%～未達 " + ((z + 1) * 10) + "%";
       h += "<tr><td>第" + z + "加碼區間</td><td>" + range + "</td><td>" + AMT[z] + "/19</td></tr>";
     }
     $("rules").innerHTML = h;
@@ -226,14 +232,14 @@
     var H = CTX.H, cur = CTX.cur, zc = CTX.zc;
     if (zc < 5){
       var nz = zc + 1;
-      var price = H * (1 - nz / 10);
+      var price = levelPrice(H, nz);
       var need = price / cur - 1;
       $("nextPrice").textContent = "≤ " + fmt(price);
       $("nextText").textContent =
-        "收盤價跌到這個價位以下，會跌入" + zoneText(nz) + "，加碼量為現金部位的 " + amtText(nz) +
+        "收盤價跌到這個價位以下（含），會跌入" + zoneText(nz) + "，加碼量為現金部位的 " + amtText(nz) +
         "。距目前價 " + fmt(cur) + " 還需下跌 " + (Math.abs(need) * 100).toFixed(2) + "%。";
     } else {
-      var edge = H * 0.5;
+      var edge = levelPrice(H, 5);
       $("nextPrice").textContent = "> " + fmt(edge) + " 後再 ≤ " + fmt(edge);
       $("nextText").textContent =
         "目前已在最深的第5加碼區間，無法再往下跌入新區間。要再觸發第5加碼區間（加碼量 " + amtText(5) +
@@ -293,9 +299,9 @@
 
     var html = "";
     for (var k = 1; k <= 5; k++){
-      var lv = H * (1 - k / 10);
+      var lv = levelPrice(H, k);
       var dist = lv / cur - 1;
-      var hit = cur <= lv + 1e-9;
+      var hit = zc >= k;
       html += "<tr" + (hit ? ' class="hit"' : "") + "><td>-" + (k * 10) + "%" +
         (hit ? '<span class="tag">已跌破</span>' : "") + "</td><td>" + fmt(lv) + "</td><td>" +
         (hit ? "—" : (dist * 100).toFixed(2) + "%") + "</td><td>" + amtText(k) + "</td></tr>";
