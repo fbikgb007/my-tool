@@ -101,9 +101,18 @@
   <div class="card hidden" id="cardLevels">
     <h2>最高價下跌各檔價位</h2>
     <table>
-      <thead><tr><th>跌幅</th><th>價位</th><th>距目前價</th></tr></thead>
+      <thead><tr><th>跌幅</th><th>價位</th><th>距目前價</th><th>加碼量</th></tr></thead>
       <tbody id="levels"></tbody>
     </table>
+  </div>
+
+  <div class="card">
+    <h2>加碼說明</h2>
+    <table>
+      <thead><tr><th>加碼區間</th><th>跌幅範圍</th><th>加碼量（現金部位）</th></tr></thead>
+      <tbody id="rules"></tbody>
+    </table>
+    <div class="muted" style="margin-top:8px">各區間加碼量合計為 19/19。</div>
   </div>
 
   <div class="card hidden" id="cardAdd">
@@ -135,6 +144,10 @@
   var CTX = null;
   var STORE_KEY = "my-tool-v1";
   var store = {stock: "", range: "3", adds: {}};
+
+  // 各加碼區間的加碼量：現金部位的 n/19（索引 0 不使用）
+  var AMT = [0, 1, 2, 3, 5, 8];
+  function amtText(z){ return z >= 1 && z <= 5 ? AMT[z] + "/19" : "—"; }
 
   function $(id){ return document.getElementById(id); }
   function setStatus(type, msg){
@@ -176,10 +189,10 @@
   }
   function zoneText(z){
     if (z === 0) return "未達 10%（不加碼）";
-    if (z === 5) return "第 5 次（跌 50% 以上）";
-    return "第 " + z + " 次（跌 " + (z * 10) + "%～" + ((z + 1) * 10) + "%）";
+    if (z === 5) return "第5加碼區間（跌 50% 以上）";
+    return "第" + z + "加碼區間（跌 " + (z * 10) + "%～" + ((z + 1) * 10) + "%）";
   }
-  function zoneShort(z){ return z === 0 ? "未達10%" : "第" + z + "次"; }
+  function zoneShort(z){ return z === 0 ? "未達10%" : "第" + z + "加碼區間"; }
 
   // 從加碼日之後逐日模擬：由較淺區間跌入較深區間 → 一次觸發
   function simulate(rows, H, d0, z0){
@@ -193,6 +206,16 @@
     return {events: events, endZone: prev};
   }
 
+  // ===== 加碼說明表（固定內容） =====
+  function renderRules(){
+    var h = "";
+    for (var z = 1; z <= 5; z++){
+      var range = z === 5 ? "跌 50% 以上" : "跌 " + (z * 10) + "%～" + ((z + 1) * 10) + "%";
+      h += "<tr><td>第" + z + "加碼區間</td><td>" + range + "</td><td>" + AMT[z] + "/19</td></tr>";
+    }
+    $("rules").innerHTML = h;
+  }
+
   // ===== 下次加碼觸發價 =====
   function renderNext(){
     var H = CTX.H, cur = CTX.cur, zc = CTX.zc;
@@ -202,14 +225,14 @@
       var need = price / cur - 1;
       $("nextPrice").textContent = "≤ " + fmt(price);
       $("nextText").textContent =
-        "收盤價跌到這個價位以下，會跌入" + zoneText(nz) + "，觸發第 " + nz + " 次加碼。距目前價 " +
-        fmt(cur) + " 還需下跌 " + (Math.abs(need) * 100).toFixed(2) + "%。";
+        "收盤價跌到這個價位以下，會跌入" + zoneText(nz) + "，加碼量為現金部位的 " + amtText(nz) +
+        "。距目前價 " + fmt(cur) + " 還需下跌 " + (Math.abs(need) * 100).toFixed(2) + "%。";
     } else {
       var edge = H * 0.5;
       $("nextPrice").textContent = "> " + fmt(edge) + " 後再 ≤ " + fmt(edge);
       $("nextText").textContent =
-        "目前已在最深區間（跌 50% 以上），無法再往下跌入新區間。要再觸發第 5 次，需先漲回 " +
-        fmt(edge) + " 以上（回到第 4 次區間），再跌回 " + fmt(edge) + " 以下。";
+        "目前已在最深的第5加碼區間，無法再往下跌入新區間。要再觸發第5加碼區間（加碼量 " + amtText(5) +
+        "），需先漲回 " + fmt(edge) + " 以上（回到第4加碼區間），再跌回 " + fmt(edge) + " 以下。";
     }
     $("cardNext").classList.remove("hidden");
   }
@@ -270,7 +293,7 @@
       var hit = cur <= lv + 1e-9;
       html += "<tr" + (hit ? ' class="hit"' : "") + "><td>-" + (k * 10) + "%" +
         (hit ? '<span class="tag">已跌破</span>' : "") + "</td><td>" + fmt(lv) + "</td><td>" +
-        (hit ? "—" : (dist * 100).toFixed(2) + "%") + "</td></tr>";
+        (hit ? "—" : (dist * 100).toFixed(2) + "%") + "</td><td>" + amtText(k) + "</td></tr>";
     }
     $("levels").innerHTML = html;
 
@@ -335,7 +358,7 @@
       showVerdict("no", "不加碼",
         "自 " + d0 + " 之後，股價沒有出現「由較淺區間跌入較深區間」的情形。目前所在：" + zoneText(CTX.zc) + "。");
     } else if (CTX.zc >= last.to){
-      showVerdict("yes", "建議加碼：第 " + last.to + " 次區間",
+      showVerdict("yes", "建議加碼：" + zoneShort(last.to) + "（現金部位的 " + amtText(last.to) + "）",
         last.date + " 收盤 " + fmt(last.price) + " 由" + zoneShort(last.from) + "跌入" + zoneShort(last.to) +
         "，之後尚未漲回較淺區間，且你記錄的加碼日之後沒有新的加碼。目前仍在：" + zoneText(CTX.zc) + "。");
     } else {
@@ -359,6 +382,7 @@
   // ===== 初始化 =====
   function init(){
     loadStore();
+    renderRules();
     if (location.protocol === "file:"){
       setStatus("err", "請透過 GitHub Pages 網址開啟，直接開本機檔案無法讀取 data.json。");
       return;
