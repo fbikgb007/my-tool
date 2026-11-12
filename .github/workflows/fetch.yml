@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: "30 7 * * 1-5"    # 台灣時間 15:30（台股收盤後）
     - cron: "30 22 * * 1-5"   # 台灣時間 06:30（美股收盤後）
+    # 想在台股盤中也更新走勢圖，把下一行開頭的 # 拿掉（每 30 分鐘一次，台灣時間 09:00～13:30）
+    # - cron: "*/30 1-5 * * 1-5"
   workflow_dispatch:           # 允許手動執行
 
 permissions:
@@ -17,7 +19,7 @@ jobs:
 
       - name: 抓取資料
         env:
-          SYMBOLS: "2330,0050,00631L"
+          SYMBOLS: "2330,0050,AAPL,00631L"
           RANGE: "5y"
         run: |
           python3 - <<'PY'
@@ -79,6 +81,48 @@ jobs:
                       print("  解析失敗", e)
               return None
 
+          def fetch_intraday(sym):
+              for host in ("query1", "query2"):
+                  url = "https://%s.finance.yahoo.com/v8/finance/chart/%s?range=1d&interval=5m" % (host, sym)
+                  j = get(url)
+                  if not j:
+                      continue
+                  try:
+                      r = j["chart"]["result"][0]
+                      m = r.get("meta", {})
+                      ts = r.get("timestamp") or []
+                      q = r["indicators"]["quote"][0]
+                      t, c = [], []
+                      for i, x in enumerate(ts):
+                          v = q["close"][i]
+                          if v is None:
+                              continue
+                          t.append(x)
+                          c.append(round(v, 4))
+                      if not t:
+                          continue
+                      opn = next((v for v in q.get("open", []) if v is not None), None)
+                      reg = (m.get("currentTradingPeriod") or {}).get("regular") or {}
+                      prev = m.get("previousClose")
+                      if prev is None:
+                          prev = m.get("chartPreviousClose")
+                      return {
+                          "t": t,
+                          "c": c,
+                          "open": opn,
+                          "high": m.get("regularMarketDayHigh"),
+                          "low": m.get("regularMarketDayLow"),
+                          "price": m.get("regularMarketPrice"),
+                          "prev": prev,
+                          "vol": m.get("regularMarketVolume"),
+                          "off": m.get("gmtoffset", 0),
+                          "start": reg.get("start"),
+                          "end": reg.get("end"),
+                      }
+                  except Exception as e:
+                      print("  日內解析失敗", e)
+              return None
+
           old = {}
           if os.path.exists("data.json"):
               try:
@@ -97,6 +141,13 @@ jobs:
                   if res:
                       break
               if res:
+                  intra = fetch_intraday(res["symbol"])
+                  if intra:
+                      res["intraday"] = intra
+                      print("  日內資料", len(intra["t"]), "筆")
+                  elif s in old and old[s].get("intraday"):
+                      res["intraday"] = old[s]["intraday"]
+                      print("  日內資料抓取失敗，沿用舊的")
                   stocks[s] = res
                   ok += 1
                   print("  成功，共", len(res["rows"]), "筆，最新", res["rows"][-1][0])
