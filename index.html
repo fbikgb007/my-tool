@@ -8,11 +8,13 @@
   :root{
     --bg:#f5f6f8; --card:#ffffff; --text:#1d2330; --sub:#667085; --line:#e3e6ec;
     --accent:#2563eb; --warn:#b54708; --warnbg:#fffaeb; --yes:#d92d20; --yesbg:#fef3f2; --no:#12a150;
+    --up:#d92d20; --down:#12a150;
   }
   @media (prefers-color-scheme: dark){
     :root{
       --bg:#12141a; --card:#1b1e27; --text:#e8eaf0; --sub:#9aa3b5; --line:#2c3140;
       --accent:#5b8cff; --warn:#fdb022; --warnbg:#2a2113; --yes:#ff6b5e; --yesbg:#2d1a18; --no:#3ddc84;
+      --up:#ff6b5e; --down:#3ddc84;
     }
   }
   *{box-sizing:border-box}
@@ -38,9 +40,17 @@
   .muted{color:var(--sub);font-size:13px}
   .big{font-size:36px;font-weight:700;margin:2px 0}
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:10px}
   .stat{border:1px solid var(--line);border-radius:10px;padding:8px 10px}
   .stat .k{font-size:12px;color:var(--sub)}
   .stat .v{font-size:17px;font-weight:600}
+  .grid4 .stat{padding:6px 8px}
+  .grid4 .stat .v{font-size:14px}
+  .today{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+  .px{font-size:30px;font-weight:700}
+  .chg{font-size:16px;font-weight:600}
+  .up{color:var(--up)} .down{color:var(--down)}
+  #ichart{width:100%;height:200px;display:block;margin-top:8px;touch-action:pan-y}
   table{border-collapse:collapse;width:100%;font-size:14px}
   th,td{padding:7px 6px;text-align:right;border-bottom:1px solid var(--line)}
   th{color:var(--sub);font-weight:600;font-size:12px}
@@ -80,7 +90,7 @@
     <div class="muted" style="margin-top:8px">要新增股票：修改 repo 裡 fetch.yml 的 SYMBOLS，再到 Actions 手動執行一次。</div>
   </div>
 
-  <!-- 2. 最高價區 -->
+  <!-- 2. 最高價區（含目前股價與走勢圖） -->
   <div class="card hidden" id="cardMain">
     <div class="muted" id="name">—</div>
     <div class="muted" id="label">期間最高價</div>
@@ -92,6 +102,24 @@
       <div class="stat"><div class="k">目前所在區間</div><div class="v" id="zoneNow">—</div></div>
       <div class="stat"><div class="k">資料日期</div><div class="v" id="lastDate">—</div></div>
     </div>
+
+    <div class="today">
+      <div class="muted" id="todayLabel">目前股價</div>
+      <div class="row" style="align-items:baseline;gap:10px">
+        <span class="px" id="nowPrice">—</span>
+        <span class="chg" id="nowChg"></span>
+      </div>
+      <canvas id="ichart"></canvas>
+      <div id="ichartMsg" class="muted hidden"></div>
+      <div class="grid4">
+        <div class="stat"><div class="k">開</div><div class="v" id="sOpen">—</div></div>
+        <div class="stat"><div class="k">高</div><div class="v" id="sHigh">—</div></div>
+        <div class="stat"><div class="k">低</div><div class="v" id="sLow">—</div></div>
+        <div class="stat"><div class="k" id="sVolK">量</div><div class="v" id="sVol">—</div></div>
+      </div>
+      <div class="muted" style="margin-top:6px">走勢圖可用手指或滑鼠在圖上滑動查看各時間價格。資料由排程定時抓取，不是即時報價。</div>
+    </div>
+
     <div class="muted" id="info" style="margin-top:10px"></div>
   </div>
 
@@ -159,6 +187,7 @@
 
   var DATA = null;
   var CTX = null;
+  var INTRA = null;
   var STORE_KEY = "my-tool-v1";
   var store = {stock: "", range: "3", adds: {}};
 
@@ -177,6 +206,12 @@
     return Number(n).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
   }
   function pct(n){ return (n * 100).toFixed(2) + "%"; }
+  function pad2(n){ return (n < 10 ? "0" : "") + n; }
+  function hhmm(t, off){
+    var d = new Date((t + off) * 1000);
+    return pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes());
+  }
+  function ymd(t, off){ return new Date((t + off) * 1000).toISOString().slice(0, 10); }
 
   // ===== 記住輸入 =====
   function loadStore(){
@@ -262,6 +297,162 @@
     $("rules").innerHTML = h;
   }
 
+  // ===== 目前股價與走勢圖 =====
+  function renderToday(s, all){
+    var n = all.length, lastRow = all[n - 1];
+    var it = s.intraday || null;
+    var hasIntra = !!(it && it.t && it.t.length >= 2);
+
+    var price = lastRow[4];
+    if (it && it.price != null) price = it.price;
+    var prev = null;
+    if (it && it.prev != null) prev = it.prev;
+    else if (n > 1) prev = all[n - 2][4];
+
+    $("nowPrice").textContent = fmt(price);
+    var diff = prev != null ? price - prev : null;
+    var cls = diff === null ? "" : (diff > 0 ? "up" : (diff < 0 ? "down" : ""));
+    $("nowPrice").className = "px " + cls;
+    if (diff === null){
+      $("nowChg").textContent = "";
+    } else {
+      var sign = diff >= 0 ? "+" : "";
+      $("nowChg").textContent = sign + fmt(diff) + "（" + sign + (diff / prev * 100).toFixed(2) + "%）";
+      $("nowChg").className = "chg " + cls;
+    }
+
+    var label = "目前股價（" + lastRow[0] + " 收盤）";
+    if (hasIntra){
+      var lt = it.t[it.t.length - 1], off = it.off || 0;
+      label = "目前股價（" + ymd(lt, off) + " " + hhmm(lt, off) + "，與前一交易日收盤比較）";
+    }
+    $("todayLabel").textContent = label;
+
+    var open = (it && it.open != null) ? it.open : lastRow[1];
+    var high = (it && it.high != null) ? it.high : lastRow[2];
+    var low = (it && it.low != null) ? it.low : lastRow[3];
+    var vol = (it && it.vol != null) ? it.vol : lastRow[5];
+    $("sOpen").textContent = open != null ? fmt(open) : "—";
+    $("sHigh").textContent = high != null ? fmt(high) : "—";
+    $("sLow").textContent = low != null ? fmt(low) : "—";
+    var isTW = /\.TWO?$/.test(s.symbol || "");
+    $("sVolK").textContent = isTW ? "量(張)" : "量(股)";
+    if (vol == null) $("sVol").textContent = "—";
+    else $("sVol").textContent = Math.round(isTW ? vol / 1000 : vol).toLocaleString("en-US");
+
+    if (hasIntra){
+      var x0 = it.t[0], x1 = it.t[it.t.length - 1];
+      if (it.start && it.end && it.t[0] >= it.start && x1 <= it.end){ x0 = it.start; x1 = it.end; }
+      INTRA = {t: it.t, c: it.c, prev: prev, x0: x0, x1: x1, off: it.off || 0};
+      $("ichart").classList.remove("hidden");
+      $("ichartMsg").classList.add("hidden");
+      drawIntra(-1);
+    } else {
+      INTRA = null;
+      $("ichart").classList.add("hidden");
+      $("ichartMsg").classList.remove("hidden");
+      $("ichartMsg").textContent = "目前沒有日內走勢資料。請確認已更新 fetch.yml，並到 Actions 手動執行一次排程。";
+    }
+  }
+
+  function drawIntra(hover){
+    if (!INTRA) return;
+    var cv = $("ichart"), dpr = window.devicePixelRatio || 1;
+    var w = cv.clientWidth, h = 200;
+    if (!w) return;
+    cv.width = w * dpr; cv.height = h * dpr;
+    var ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    var I = INTRA, n = I.t.length;
+    var padL = 46, padR = 8, padT = 8, padB = 20;
+    var mn = Math.min.apply(null, I.c), mx = Math.max.apply(null, I.c);
+    if (I.prev != null){ mn = Math.min(mn, I.prev); mx = Math.max(mx, I.prev); }
+    var sp = (mx - mn) || Math.abs(mx) * 0.01 || 1;
+    mn -= sp * 0.08; mx += sp * 0.08;
+    function X(t){ return padL + (w - padL - padR) * (t - I.x0) / (I.x1 - I.x0); }
+    function Y(v){ return padT + (h - padT - padB) * (1 - (v - mn) / (mx - mn)); }
+
+    var cs = getComputedStyle(document.documentElement);
+    var colLine = cs.getPropertyValue("--line").trim();
+    var colSub = cs.getPropertyValue("--sub").trim();
+    var colText = cs.getPropertyValue("--text").trim();
+    var colCard = cs.getPropertyValue("--card").trim();
+    var up = I.prev == null ? true : I.c[n - 1] >= I.prev;
+    var colMain = cs.getPropertyValue(up ? "--up" : "--down").trim();
+
+    ctx.font = "11px sans-serif";
+    ctx.lineWidth = 1;
+    for (var g = 0; g <= 2; g++){
+      var v = mn + (mx - mn) * g / 2, y = Y(v);
+      ctx.strokeStyle = colLine;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+      ctx.fillStyle = colSub; ctx.textAlign = "right";
+      ctx.fillText(v.toFixed(v >= 100 ? 1 : 2), padL - 6, y + 4);
+    }
+    if (I.prev != null){
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = colSub;
+      ctx.beginPath(); ctx.moveTo(padL, Y(I.prev)); ctx.lineTo(w - padR, Y(I.prev)); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(X(I.t[0]), Y(I.c[0]));
+    for (var i = 1; i < n; i++) ctx.lineTo(X(I.t[i]), Y(I.c[i]));
+    ctx.lineTo(X(I.t[n - 1]), h - padB);
+    ctx.lineTo(X(I.t[0]), h - padB);
+    ctx.closePath();
+    ctx.globalAlpha = 0.12; ctx.fillStyle = colMain; ctx.fill(); ctx.globalAlpha = 1;
+
+    ctx.beginPath();
+    ctx.moveTo(X(I.t[0]), Y(I.c[0]));
+    for (var j = 1; j < n; j++) ctx.lineTo(X(I.t[j]), Y(I.c[j]));
+    ctx.strokeStyle = colMain; ctx.lineWidth = 1.8; ctx.stroke();
+
+    ctx.fillStyle = colSub;
+    ctx.textAlign = "left"; ctx.fillText(hhmm(I.x0, I.off), padL, h - 5);
+    ctx.textAlign = "center"; ctx.fillText(hhmm((I.x0 + I.x1) / 2, I.off), (padL + w - padR) / 2, h - 5);
+    ctx.textAlign = "right"; ctx.fillText(hhmm(I.x1, I.off), w - padR, h - 5);
+
+    if (hover >= 0 && hover < n){
+      var hx = X(I.t[hover]), hy = Y(I.c[hover]);
+      ctx.strokeStyle = colSub; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(hx, padT); ctx.lineTo(hx, h - padB); ctx.stroke();
+      ctx.fillStyle = colMain;
+      ctx.beginPath(); ctx.arc(hx, hy, 3.5, 0, Math.PI * 2); ctx.fill();
+      var txt = hhmm(I.t[hover], I.off) + "  " + fmt(I.c[hover]);
+      if (I.prev != null){
+        var dp = (I.c[hover] / I.prev - 1) * 100;
+        txt += "  " + (dp >= 0 ? "+" : "") + dp.toFixed(2) + "%";
+      }
+      ctx.font = "12px sans-serif";
+      var tw = ctx.measureText(txt).width + 12;
+      var bx = hx - tw / 2;
+      if (bx < padL) bx = padL;
+      if (bx + tw > w - padR) bx = w - padR - tw;
+      ctx.fillStyle = colCard; ctx.strokeStyle = colLine;
+      ctx.fillRect(bx, padT, tw, 20); ctx.strokeRect(bx, padT, tw, 20);
+      ctx.fillStyle = colText; ctx.textAlign = "left";
+      ctx.fillText(txt, bx + 6, padT + 14);
+    }
+  }
+
+  function hoverIndex(e){
+    if (!INTRA) return -1;
+    var cv = $("ichart"), rect = cv.getBoundingClientRect();
+    var x = e.clientX - rect.left, w = cv.clientWidth;
+    var padL = 46, padR = 8;
+    var t = INTRA.x0 + (x - padL) / (w - padL - padR) * (INTRA.x1 - INTRA.x0);
+    var best = 0, bd = Infinity;
+    for (var i = 0; i < INTRA.t.length; i++){
+      var dd = Math.abs(INTRA.t[i] - t);
+      if (dd < bd){ bd = dd; best = i; }
+    }
+    return best;
+  }
+
   // ===== 下次加碼觸發價 =====
   // st.mode："none"（尚未輸入完整記錄）、"bad"（日期有誤）、"ok"、"pending"（已有待執行的加碼）
   // st.locked：目前失效中的區間
@@ -311,10 +502,10 @@
         "，加碼量為現金部位的 " + amtText(nz) + "。距目前價 " + fmt(cur) + " 還需下跌 " +
         (Math.abs(need) * 100).toFixed(2) + "%。" + lockedTxt;
     } else {
-      var up = unlockPrice(H, 5), dn = levelPrice(H, 5);
-      $("nextPrice").textContent = "先 ≥ " + fmt(up) + "，再 ≤ " + fmt(dn);
+      var upP = unlockPrice(H, 5), dn = levelPrice(H, 5);
+      $("nextPrice").textContent = "先 ≥ " + fmt(upP) + "，再 ≤ " + fmt(dn);
       $("nextText").textContent = lead +
-        " 目前已沒有更深的有效區間。第5加碼區間（加碼量 " + amtText(5) + "）要先漲回 " + fmt(up) +
+        " 目前已沒有更深的有效區間。第5加碼區間（加碼量 " + amtText(5) + "）要先漲回 " + fmt(upP) +
         " 以上（當日最高價）讓它重新生效，之後收盤價再跌到 " + fmt(dn) + " 以下才會觸發。" + lockedTxt;
     }
     $("cardNext").classList.remove("hidden");
@@ -384,6 +575,7 @@
     $("cardLevels").classList.remove("hidden");
     $("cardAdd").classList.remove("hidden");
     setStatus("", "");
+    renderToday(s, all);
 
     var rec = store.adds[key] || {};
     $("addPrice").value = rec.p || "";
@@ -518,6 +710,24 @@
     $("addDate").value = "";
     renderAdd();
   });
+
+  var ic = $("ichart");
+  ic.addEventListener("pointermove", function(e){ drawIntra(hoverIndex(e)); });
+  ic.addEventListener("pointerdown", function(e){ drawIntra(hoverIndex(e)); });
+  ic.addEventListener("pointerleave", function(){ drawIntra(-1); });
+  ic.addEventListener("pointercancel", function(){ drawIntra(-1); });
+
+  var rt;
+  window.addEventListener("resize", function(){
+    clearTimeout(rt);
+    rt = setTimeout(function(){ drawIntra(-1); }, 150);
+  });
+  if (window.matchMedia){
+    var mq = window.matchMedia("(prefers-color-scheme: dark)");
+    var onTheme = function(){ drawIntra(-1); };
+    if (mq.addEventListener) mq.addEventListener("change", onTheme);
+    else if (mq.addListener) mq.addListener(onTheme);
+  }
 
   init();
 })();
