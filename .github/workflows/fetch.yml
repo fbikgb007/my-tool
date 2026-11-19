@@ -2,14 +2,19 @@ name: 抓取股價資料
 
 on:
   schedule:
-    - cron: "30 7 * * 1-5"    # 台灣時間 15:30（台股收盤後）
-    - cron: "30 22 * * 1-5"   # 台灣時間 06:30（美股收盤後）
-    # 想在台股盤中也更新走勢圖，把下一行開頭的 # 拿掉（每 30 分鐘一次，台灣時間 09:00～13:30）
-    - cron: "*/30 1-5 * * 1-5"
-  workflow_dispatch:           # 允許手動執行
+    - cron: "*/10 1-5 * * 1-5"   # 台股盤中：台灣時間 09:00～13:50，每 10 分鐘
+    - cron: "30 7 * * 1-5"       # 台股收盤後：台灣時間 15:30
+    - cron: "30 22 * * 1-5"      # 美股收盤後：台灣時間 06:30
+    # 想在美股盤中也更新，把下一行開頭的 # 拿掉（台灣時間約 21:30～05:00，每 15 分鐘）
+    # - cron: "*/15 13-21 * * 1-5"
+  workflow_dispatch:              # 允許手動執行
 
 permissions:
   contents: write
+
+concurrency:
+  group: fetch-stock
+  cancel-in-progress: false
 
 jobs:
   fetch:
@@ -144,7 +149,7 @@ jobs:
                   intra = fetch_intraday(res["symbol"])
                   if intra:
                       res["intraday"] = intra
-                      print("  日內資料", len(intra["t"]), "筆")
+                      print("  日內資料", len(intra["t"]), "筆，最後一筆時間戳", intra["t"][-1])
                   elif s in old and old[s].get("intraday"):
                       res["intraday"] = old[s]["intraday"]
                       print("  日內資料抓取失敗，沿用舊的")
@@ -177,5 +182,6 @@ jobs:
             echo "資料沒有變動"
           else
             git commit -m "更新股價資料"
+            git pull --rebase -X theirs origin "${GITHUB_REF_NAME}" || true
             git push
           fi
