@@ -60,10 +60,13 @@
   .verdict{border-radius:10px;padding:12px;border:2px solid var(--line);margin-top:12px}
   .verdict.yes{border-color:var(--yes);background:var(--yesbg)}
   .verdict.no{border-color:var(--no)}
+  .verdict.warn{border-color:var(--warn);background:var(--warnbg)}
   .verdict .t{font-size:20px;font-weight:700;margin-bottom:4px}
   .verdict.yes .t{color:var(--yes)}
   .verdict.no .t{color:var(--no)}
+  .verdict.warn .t{color:var(--warn)}
   .notice{margin:6px 0 8px;padding:8px 10px;border-radius:8px;background:var(--yesbg);color:var(--yes);font-size:14px;font-weight:600}
+  .notice.warn{background:var(--warnbg);color:var(--warn)}
   ul{margin:6px 0 0;padding-left:20px}
   li{margin-bottom:2px}
   .hidden{display:none}
@@ -87,6 +90,11 @@
       </select>
     </div>
     <div id="status">載入資料中…</div>
+    <div id="staleWarn" class="notice warn hidden" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:8px">
+      <button type="button" id="btnReload">重新載入資料</button>
+      <span id="fresh" class="muted"></span>
+    </div>
     <div class="muted" style="margin-top:8px">要新增股票：修改 repo 裡 fetch.yml 的 SYMBOLS，再到 Actions 手動執行一次。</div>
   </div>
 
@@ -212,6 +220,10 @@
     return pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes());
   }
   function ymd(t, off){ return new Date((t + off) * 1000).toISOString().slice(0, 10); }
+  function todayStr(){
+    var d = new Date();
+    return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+  }
 
   // ===== 記住輸入 =====
   function loadStore(){
@@ -295,6 +307,43 @@
       h += "<tr><td>第" + z + "加碼區間</td><td>" + range + "</td><td>" + AMT[z] + "/19</td></tr>";
     }
     $("rules").innerHTML = h;
+  }
+
+  // ===== 資料新舊提示 =====
+  function ageText(ms){
+    var m = Math.round(ms / 60000);
+    if (m < 1) return "剛剛";
+    if (m < 90) return m + " 分鐘前";
+    var h = Math.round(m / 60);
+    if (h < 48) return h + " 小時前";
+    return Math.round(h / 24) + " 天前";
+  }
+  function renderFresh(){
+    if (!DATA) return;
+    var t = Date.parse(DATA.updated);
+    var warn = $("staleWarn");
+    if (isNaN(t)){
+      $("fresh").textContent = "資料更新時間未知";
+      warn.className = "notice warn hidden";
+      return;
+    }
+    var age = Date.now() - t;
+    var upd = "";
+    try { upd = new Date(t).toLocaleString("zh-TW", {timeZone: "Asia/Taipei", hour12: false}); }
+    catch (e){ upd = DATA.updated; }
+    $("fresh").textContent = "資料更新於 " + upd + "（" + ageText(age) + "）";
+
+    // 以裝置時間判斷：平日 09:05～13:40 盤中，資料超過 40 分鐘沒更新就警告
+    var now = new Date();
+    var day = now.getDay(), mins = now.getHours() * 60 + now.getMinutes();
+    var inMarket = day >= 1 && day <= 5 && mins >= 9 * 60 + 5 && mins <= 13 * 60 + 40;
+    if (inMarket && age > 40 * 60000){
+      warn.className = "notice warn";
+      warn.textContent = "目前是台股盤中，但資料已 " + ageText(age).replace("前", "") + "沒有更新，畫面看到的不是今天的行情。請到 GitHub 的 Actions 檢查排程是否有執行或失敗。";
+    } else {
+      warn.className = "notice warn hidden";
+      warn.textContent = "";
+    }
   }
 
   // ===== 目前股價與走勢圖 =====
@@ -472,7 +521,8 @@
 
     if (st.mode === "ok" || st.mode === "pending"){
       lead = "依你的記錄（加碼價 " + fmt(st.p0) + "、" + st.d0 + "，" + zoneShort(st.z0) + "）" +
-        (st.triggerCount ? "，並假設加碼日後的觸發都已加碼" : "") + "。";
+        (st.triggerCount ? "，並假設加碼日後的觸發都已加碼" : "") + "。" +
+        (st.stale ? "（資料尚未更新到加碼日，暫以你的記錄推算）" : "");
     } else if (st.mode === "bad"){
       lead = "加碼記錄的日期有誤，暫以目前所在區間推算。";
     } else {
@@ -555,10 +605,7 @@
     $("zoneNow").textContent = zoneShort(zc);
     $("lastDate").textContent = lastRow[0];
 
-    var upd = "";
-    try { upd = new Date(DATA.updated).toLocaleString("zh-TW", {timeZone: "Asia/Taipei", hour12: false}); }
-    catch (e){ upd = DATA.updated; }
-    $("info").textContent = "幣別 " + (s.currency || "—") + "　區間 " + rows.length + " 個交易日　資料更新於 " + upd + "（台灣時間）　目前：" + zoneText(zc);
+    $("info").textContent = "幣別 " + (s.currency || "—") + "　區間 " + rows.length + " 個交易日　目前：" + zoneText(zc);
 
     var html = "";
     for (var k = 1; k <= 5; k++){
@@ -576,6 +623,7 @@
     $("cardAdd").classList.remove("hidden");
     setStatus("", "");
     renderToday(s, all);
+    renderFresh();
 
     var rec = store.adds[key] || {};
     $("addPrice").value = rec.p || "";
@@ -619,13 +667,23 @@
       renderNext({mode: "none", locked: lockedUpTo(CTX.zc)});
       return;
     }
-    if (d0 > CTX.lastDate){
-      info.textContent = line;
-      showVerdict("no", "日期有誤", "加碼日期晚於最新資料日（" + CTX.lastDate + "），請確認。");
+    info.textContent = line;
+
+    // 加碼日期晚於「今天」才算有誤
+    if (d0 > todayStr()){
+      showVerdict("no", "日期有誤", "加碼日期是未來的日期（" + d0 + "），請確認。");
       renderNext({mode: "bad", locked: lockedUpTo(CTX.zc)});
       return;
     }
-    info.textContent = line;
+
+    // 資料還沒更新到加碼日：不算錯，照記錄推算，並提示資料過舊
+    if (d0 > CTX.lastDate){
+      showVerdict("warn", "資料尚未更新到加碼日",
+        "目前資料只到 " + CTX.lastDate + "，還沒有加碼日（" + d0 + "）之後的行情，所以無法判斷之後是否再觸發。" +
+        "下次加碼觸發價先依你的加碼記錄推算。請更新資料後再看判斷結果。");
+      renderNext({mode: "ok", locked: lockedUpTo(z0), p0: p0, d0: d0, z0: z0, triggerCount: 0, stale: true});
+      return;
+    }
 
     var sim = simulate(CTX.all, CTX.H, d0, z0);
     var trig = sim.triggers;
@@ -666,21 +724,21 @@
     renderNext({mode: pending ? "pending" : "ok", locked: sim.locked, p0: p0, d0: d0, z0: z0, triggerCount: trig.length});
   }
 
-  // ===== 初始化 =====
-  function init(){
-    loadStore();
-    renderRules();
+  // ===== 載入資料 =====
+  function loadData(){
     if (location.protocol === "file:"){
       setStatus("err", "請透過 GitHub Pages 網址開啟，直接開本機檔案無法讀取 data.json。");
       return;
     }
-    fetch("data.json?t=" + Date.now(), {cache: "no-store"}).then(function(r){
+    $("btnReload").disabled = true;
+    return fetch("data.json?t=" + Date.now(), {cache: "no-store"}).then(function(r){
       if (!r.ok) throw new Error("找不到 data.json（HTTP " + r.status + "），請先到 Actions 手動執行一次排程");
       return r.json();
     }).then(function(j){
       if (!j || !j.stocks || !Object.keys(j.stocks).length) throw new Error("data.json 裡沒有股票資料");
       DATA = j;
       var sel = $("stock");
+      var keep = sel.value || store.stock;
       sel.innerHTML = "";
       Object.keys(j.stocks).forEach(function(k){
         var o = document.createElement("option");
@@ -688,15 +746,18 @@
         o.textContent = k + "　" + (j.stocks[k].name || "");
         sel.appendChild(o);
       });
-      if (store.stock && j.stocks[store.stock]) sel.value = store.stock;
+      if (keep && j.stocks[keep]) sel.value = keep;
       $("range").value = store.range;
       if ($("range").value !== store.range) $("range").value = "3";
       render();
     }).catch(function(e){
       setStatus("err", "載入失敗：" + e.message);
+    }).then(function(){
+      $("btnReload").disabled = false;
     });
   }
 
+  // ===== 初始化與事件 =====
   $("stock").addEventListener("change", function(){ if (DATA) render(); });
   $("range").addEventListener("change", function(){ if (DATA) render(); });
   $("addPrice").addEventListener("input", renderAdd);
@@ -709,6 +770,10 @@
     $("addPrice").value = "";
     $("addDate").value = "";
     renderAdd();
+  });
+  $("btnReload").addEventListener("click", function(){
+    setStatus("", "重新載入中…");
+    loadData();
   });
 
   var ic = $("ichart");
@@ -728,8 +793,12 @@
     if (mq.addEventListener) mq.addEventListener("change", onTheme);
     else if (mq.addListener) mq.addListener(onTheme);
   }
+  // 頁面放著不動時，每分鐘更新一次「幾分鐘前」的顯示
+  setInterval(renderFresh, 60000);
 
-  init();
+  loadStore();
+  renderRules();
+  loadData();
 })();
 </script>
 </body>
